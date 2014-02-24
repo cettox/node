@@ -11,10 +11,10 @@ var workersOnline = 0;
 
 if (cluster.isMaster) {
   cluster.on('online', function() {
-      workersOnline++;
-      if (workersOnline == NUMBER_OF_WORKERS)
-        console.error('all workers are running');
-    });
+    if (++workersOnline === NUMBER_OF_WORKERS) {
+      console.error('all workers are running');
+    }
+  });
 
   for (var i = 0; i < NUMBER_OF_WORKERS; i++) {
     cluster.fork();

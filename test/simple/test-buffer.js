@@ -965,3 +965,31 @@ assert.throws(function() {
   Buffer('', 'buffer');
 }, TypeError);
 
+// Regression test for #6111. Constructing a buffer from another buffer
+// should a) work, and b) not corrupt the source buffer.
+(function() {
+  var a = [0];
+  for (var i = 0; i < 7; ++i) a = a.concat(a);
+  a = a.map(function(_, i) { return i });
+  var b = Buffer(a);
+  var c = Buffer(b);
+  assert.equal(b.length, a.length);
+  assert.equal(c.length, a.length);
+  for (var i = 0, k = a.length; i < k; ++i) {
+    assert.equal(a[i], i);
+    assert.equal(b[i], i);
+    assert.equal(c[i], i);
+  }
+})();
+
+// Test Buffers to ArrayBuffers
+var b = new Buffer(5).fill('abcdf');
+var c = b.toArrayBuffer();
+assert.equal(c.byteLength, 5);
+assert.equal(Object.prototype.toString.call(c), '[object ArrayBuffer]');
+var d = new Uint8Array(c);
+for (var i = 0; i < 5; i++)
+  assert.equal(d[i], b[i]);
+b.fill('ghijk');
+for (var i = 0; i < 5; i++)
+  assert.notEqual(d[i], b[i]);

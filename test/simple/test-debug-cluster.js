@@ -27,7 +27,6 @@ var args = ['--debug', common.fixturesDir + '/clustered-server/app.js' ];
 var child = spawn(process.execPath, args);
 var outputLines = [];
 
-
 child.stderr.on('data', function(data) {
   var lines = data.toString().replace(/\r/g, '').trim().split('\n');
   var line = lines[0];
@@ -42,19 +41,15 @@ child.stderr.on('data', function(data) {
   }
 });
 
-setTimeout(function testTimedOut() {
-  assert(false, 'test timed out.');
-}, 3000);
-
-process.on('exit', function() {
-    child.kill();
+process.on('exit', function onExit() {
+  child.kill();
 });
 
-function assertOutputLines() {
+var assertOutputLines = common.mustCall(function() {
   var expectedLines = [
-    'debugger listening on port ' + 5858,
-    'debugger listening on port ' + 5859,
-    'debugger listening on port ' + 5860,
+    'Debugger listening on port ' + 5858,
+    'Debugger listening on port ' + 5859,
+    'Debugger listening on port ' + 5860,
   ];
 
   // Do not assume any particular order of output messages,
@@ -65,4 +60,4 @@ function assertOutputLines() {
   assert.equal(outputLines.length, expectedLines.length)
   for (var i = 0; i < expectedLines.length; i++)
     assert.equal(outputLines[i], expectedLines[i]);
-}
+});

@@ -19,6 +19,13 @@
  * IN THE SOFTWARE.
  */
 
+/* Expose glibc-specific EAI_* error codes. Needs to be defined before we
+ * include any headers.
+ */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
+
 #include "uv.h"
 #include "uv-common.h"
 
@@ -59,40 +66,6 @@ size_t uv_req_size(uv_req_type type) {
 
 #undef XX
 
-size_t uv_strlcpy(char* dst, const char* src, size_t size) {
-  size_t n;
-
-  if (size == 0)
-    return 0;
-
-  for (n = 0; n < (size - 1) && *src != '\0'; n++)
-    *dst++ = *src++;
-
-  *dst = '\0';
-
-  return n;
-}
-
-
-size_t uv_strlcat(char* dst, const char* src, size_t size) {
-  size_t n;
-
-  if (size == 0)
-    return 0;
-
-  for (n = 0; n < size && *dst != '\0'; n++, dst++);
-
-  if (n == size)
-    return n;
-
-  while (n < (size - 1) && *src != '\0')
-    n++, *dst++ = *src++;
-
-  *dst = '\0';
-
-  return n;
-}
-
 
 uv_buf_t uv_buf_init(char* base, unsigned int len) {
   uv_buf_t buf;
@@ -125,56 +98,47 @@ const char* uv_strerror(int err) {
 #undef UV_STRERROR_GEN
 
 
-struct sockaddr_in uv_ip4_addr(const char* ip, int port) {
-  struct sockaddr_in addr;
-
-  memset(&addr, 0, sizeof(struct sockaddr_in));
-
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  addr.sin_addr.s_addr = inet_addr(ip);
-
-  return addr;
+int uv_ip4_addr(const char* ip, int port, struct sockaddr_in* addr) {
+  memset(addr, 0, sizeof(*addr));
+  addr->sin_family = AF_INET;
+  addr->sin_port = htons(port);
+  return uv_inet_pton(AF_INET, ip, &(addr->sin_addr.s_addr));
 }
 
 
-struct sockaddr_in6 uv_ip6_addr(const char* ip, int port) {
-  struct sockaddr_in6 addr;
+int uv_ip6_addr(const char* ip, int port, struct sockaddr_in6* addr) {
 #if defined(UV_PLATFORM_HAS_IP6_LINK_LOCAL_ADDRESS)
   char address_part[40];
   size_t address_part_size;
   const char* zone_index;
 #endif
 
-  memset(&addr, 0, sizeof(struct sockaddr_in6));
-
-  addr.sin6_family = AF_INET6;
-  addr.sin6_port = htons(port);
+  memset(addr, 0, sizeof(*addr));
+  addr->sin6_family = AF_INET6;
+  addr->sin6_port = htons(port);
 
 #if defined(UV_PLATFORM_HAS_IP6_LINK_LOCAL_ADDRESS)
   zone_index = strchr(ip, '%');
   if (zone_index != NULL) {
-    address_part_size = sizeof(address_part);
-    assert((unsigned)(zone_index - ip) < address_part_size);
-    strncpy(address_part, ip, zone_index - ip);
-    address_part[address_part_size - 1] = '\0';
+    address_part_size = zone_index - ip;
+    if (address_part_size >= sizeof(address_part))
+      address_part_size = sizeof(address_part) - 1;
 
+    memcpy(address_part, ip, address_part_size);
+    address_part[address_part_size] = '\0';
     ip = address_part;
 
     zone_index++; /* skip '%' */
     /* NOTE: unknown interface (id=0) is silently ignored */
 #ifdef _WIN32
-    addr.sin6_scope_id = atoi(zone_index);
+    addr->sin6_scope_id = atoi(zone_index);
 #else
-    addr.sin6_scope_id = if_nametoindex(zone_index);
+    addr->sin6_scope_id = if_nametoindex(zone_index);
 #endif
   }
 #endif
 
-  /* result code is ignored - we assume ip is a valid IPv6 address */
-  uv_inet_pton(AF_INET6, ip, &addr.sin6_addr);
-
-  return addr;
+  return uv_inet_pton(AF_INET6, ip, &addr->sin6_addr);
 }
 
 
@@ -188,87 +152,83 @@ int uv_ip6_name(struct sockaddr_in6* src, char* dst, size_t size) {
 }
 
 
-int uv_tcp_bind(uv_tcp_t* handle, struct sockaddr_in addr) {
-  if (handle->type != UV_TCP || addr.sin_family != AF_INET)
-    return UV_EINVAL;
-  else
-    return uv__tcp_bind(handle, addr);
-}
+int uv_tcp_bind(uv_tcp_t* handle,
+                const struct sockaddr* addr,
+                unsigned int flags) {
+  unsigned int addrlen;
 
-
-int uv_tcp_bind6(uv_tcp_t* handle, struct sockaddr_in6 addr) {
-  if (handle->type != UV_TCP || addr.sin6_family != AF_INET6)
+  if (handle->type != UV_TCP)
     return UV_EINVAL;
+
+  if (addr->sa_family == AF_INET)
+    addrlen = sizeof(struct sockaddr_in);
+  else if (addr->sa_family == AF_INET6)
+    addrlen = sizeof(struct sockaddr_in6);
   else
-    return uv__tcp_bind6(handle, addr);
+    return UV_EINVAL;
+
+  return uv__tcp_bind(handle, addr, addrlen, flags);
 }
 
 
 int uv_udp_bind(uv_udp_t* handle,
-                struct sockaddr_in addr,
+                const struct sockaddr* addr,
                 unsigned int flags) {
-  if (handle->type != UV_UDP || addr.sin_family != AF_INET)
-    return UV_EINVAL;
-  else
-    return uv__udp_bind(handle, addr, flags);
-}
+  unsigned int addrlen;
 
-
-int uv_udp_bind6(uv_udp_t* handle,
-                 struct sockaddr_in6 addr,
-                 unsigned int flags) {
-  if (handle->type != UV_UDP || addr.sin6_family != AF_INET6)
+  if (handle->type != UV_UDP)
     return UV_EINVAL;
+
+  if (addr->sa_family == AF_INET)
+    addrlen = sizeof(struct sockaddr_in);
+  else if (addr->sa_family == AF_INET6)
+    addrlen = sizeof(struct sockaddr_in6);
   else
-    return uv__udp_bind6(handle, addr, flags);
+    return UV_EINVAL;
+
+  return uv__udp_bind(handle, addr, addrlen, flags);
 }
 
 
 int uv_tcp_connect(uv_connect_t* req,
                    uv_tcp_t* handle,
-                   struct sockaddr_in address,
+                   const struct sockaddr* addr,
                    uv_connect_cb cb) {
-  if (handle->type != UV_TCP || address.sin_family != AF_INET)
-    return UV_EINVAL;
-  else
-    return uv__tcp_connect(req, handle, address, cb);
-}
+  unsigned int addrlen;
 
-
-int uv_tcp_connect6(uv_connect_t* req,
-                    uv_tcp_t* handle,
-                    struct sockaddr_in6 address,
-                    uv_connect_cb cb) {
-  if (handle->type != UV_TCP || address.sin6_family != AF_INET6)
+  if (handle->type != UV_TCP)
     return UV_EINVAL;
+
+  if (addr->sa_family == AF_INET)
+    addrlen = sizeof(struct sockaddr_in);
+  else if (addr->sa_family == AF_INET6)
+    addrlen = sizeof(struct sockaddr_in6);
   else
-    return uv__tcp_connect6(req, handle, address, cb);
+    return UV_EINVAL;
+
+  return uv__tcp_connect(req, handle, addr, addrlen, cb);
 }
 
 
 int uv_udp_send(uv_udp_send_t* req,
                 uv_udp_t* handle,
-                uv_buf_t bufs[],
-                int bufcnt,
-                struct sockaddr_in addr,
+                const uv_buf_t bufs[],
+                unsigned int nbufs,
+                const struct sockaddr* addr,
                 uv_udp_send_cb send_cb) {
-  if (handle->type != UV_UDP || addr.sin_family != AF_INET)
-    return UV_EINVAL;
-  else
-    return uv__udp_send(req, handle, bufs, bufcnt, addr, send_cb);
-}
+  unsigned int addrlen;
 
-
-int uv_udp_send6(uv_udp_send_t* req,
-                 uv_udp_t* handle,
-                 uv_buf_t bufs[],
-                 int bufcnt,
-                 struct sockaddr_in6 addr,
-                 uv_udp_send_cb send_cb) {
-  if (handle->type != UV_UDP || addr.sin6_family != AF_INET6)
+  if (handle->type != UV_UDP)
     return UV_EINVAL;
+
+  if (addr->sa_family == AF_INET)
+    addrlen = sizeof(struct sockaddr_in);
+  else if (addr->sa_family == AF_INET6)
+    addrlen = sizeof(struct sockaddr_in6);
   else
-    return uv__udp_send6(req, handle, bufs, bufcnt, addr, send_cb);
+    return UV_EINVAL;
+
+  return uv__udp_send(req, handle, bufs, nbufs, addr, addrlen, send_cb);
 }
 
 
@@ -441,6 +401,9 @@ int uv__getaddrinfo_translate_error(int sys_err) {
 #if defined(EAI_BADFLAGS)
   case EAI_BADFLAGS: return UV_EAI_BADFLAGS;
 #endif
+#if defined(EAI_BADHINTS)
+  case EAI_BADHINTS: return UV_EAI_BADHINTS;
+#endif
 #if defined(EAI_CANCELED)
   case EAI_CANCELED: return UV_EAI_CANCELED;
 #endif
@@ -461,6 +424,12 @@ int uv__getaddrinfo_translate_error(int sys_err) {
   case EAI_NONAME: return UV_EAI_NONAME;
 # endif
 #endif
+#if defined(EAI_OVERFLOW)
+  case EAI_OVERFLOW: return UV_EAI_OVERFLOW;
+#endif
+#if defined(EAI_PROTOCOL)
+  case EAI_PROTOCOL: return UV_EAI_PROTOCOL;
+#endif
 #if defined(EAI_SERVICE)
   case EAI_SERVICE: return UV_EAI_SERVICE;
 #endif
@@ -473,4 +442,5 @@ int uv__getaddrinfo_translate_error(int sys_err) {
   }
   assert(!"unknown EAI_* error code");
   abort();
+  return 0;  /* Pacify compiler. */
 }

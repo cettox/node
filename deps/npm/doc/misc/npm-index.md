@@ -115,6 +115,10 @@ Publish a package
 
 Rebuild a package
 
+## npm-repo(1)
+
+Open package repository page in the browser
+
 ## npm-restart(1)
 
 Start a package
@@ -280,6 +284,10 @@ Publish a package
 ## npm-rebuild(3)
 
 Rebuild a package
+
+## npm-repo(3)
+
+Open package repository page in the browser
 
 ## npm-restart(3)
 

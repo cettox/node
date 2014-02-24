@@ -335,7 +335,7 @@ int uv_cond_timedwait(uv_cond_t* cond, uv_mutex_t* mutex, uint64_t timeout) {
   ts.tv_nsec = timeout % NANOSEC;
   r = pthread_cond_timedwait_relative_np(cond, mutex, &ts);
 #else
-  timeout += uv__hrtime();
+  timeout += uv__hrtime(UV_CLOCK_PRECISE);
   ts.tv_sec = timeout / NANOSEC;
   ts.tv_nsec = timeout % NANOSEC;
 #if defined(__ANDROID__)
@@ -441,3 +441,24 @@ void uv_barrier_wait(uv_barrier_t* barrier) {
 }
 
 #endif /* defined(__APPLE__) && defined(__MACH__) */
+
+int uv_key_create(uv_key_t* key) {
+  return -pthread_key_create(key, NULL);
+}
+
+
+void uv_key_delete(uv_key_t* key) {
+  if (pthread_key_delete(*key))
+    abort();
+}
+
+
+void* uv_key_get(uv_key_t* key) {
+  return pthread_getspecific(*key);
+}
+
+
+void uv_key_set(uv_key_t* key, void* value) {
+  if (pthread_setspecific(*key, value))
+    abort();
+}

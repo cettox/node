@@ -14,10 +14,19 @@
     # Enable V8's post-mortem debugging only on unix flavors.
     'conditions': [
       ['OS == "win"', {
+        'os_posix': 0,
         'v8_postmortem_support': 'false'
       }, {
+        'os_posix': 1,
         'v8_postmortem_support': 'true'
-      }]
+      }],
+      ['GENERATOR == "ninja"', {
+        'OBJ_DIR': '<(PRODUCT_DIR)/obj',
+        'V8_BASE': '<(PRODUCT_DIR)/libv8_base.<(target_arch).a',
+      }, {
+        'OBJ_DIR': '<(PRODUCT_DIR)/obj.target',
+        'V8_BASE': '<(PRODUCT_DIR)/obj.target/deps/v8/tools/gyp/libv8_base.<(target_arch).a',
+      }],
     ],
   },
 
@@ -55,18 +64,17 @@
             'msvs_configuration_platform': 'x64',
           }],
           ['OS=="solaris"', {
-            'cflags': [ '-fno-omit-frame-pointer' ],
             # pull in V8's postmortem metadata
             'ldflags': [ '-Wl,-z,allextract' ]
-          }, {
-            # Doesn't work with the Solaris linker.
-            'ldflags': [ '-Wl,--gc-sections' ],
           }],
           ['clang == 0 and gcc_version >= 40', {
             'cflags': [ '-fno-tree-vrp' ],  # Work around compiler bug.
           }],
           ['clang == 0 and gcc_version <= 44', {
             'cflags': [ '-fno-tree-sink' ],  # Work around compiler bug.
+          }],
+          ['OS!="mac" and OS!="win"', {
+            'cflags': [ '-fno-omit-frame-pointer' ],
           }],
         ],
         'msvs_settings': {
@@ -99,6 +107,10 @@
         },
       }
     },
+    # Forcibly disable -Werror.  We support a wide range of compilers, it's
+    # simply not feasible to squelch all warnings, never mind that the
+    # libraries in deps/ are not under our control.
+    'cflags!': ['-Werror'],
     'msvs_settings': {
       'VCCLCompilerTool': {
         'StringPooling': 'true', # pool string literals

@@ -25,9 +25,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <map>
-#include <vector>
-
 #include "global-handles.h"
 
 #include "cctest.h"
@@ -89,19 +86,19 @@ class TestObjectVisitor : public ObjectVisitor {
 
 TEST(IterateObjectGroupsOldApi) {
   CcTest::InitializeVM();
-  GlobalHandles* global_handles = Isolate::Current()->global_handles();
-
+  GlobalHandles* global_handles = CcTest::i_isolate()->global_handles();
+  Heap* heap = CcTest::heap();
   v8::HandleScope handle_scope(CcTest::isolate());
 
   Handle<Object> g1s1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g1s2 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
 
   Handle<Object> g2s1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g2s2 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
 
   TestRetainedObjectInfo info1;
   TestRetainedObjectInfo info2;
@@ -184,19 +181,20 @@ TEST(IterateObjectGroupsOldApi) {
 
 TEST(IterateObjectGroups) {
   CcTest::InitializeVM();
-  GlobalHandles* global_handles = Isolate::Current()->global_handles();
+  GlobalHandles* global_handles = CcTest::i_isolate()->global_handles();
+  Heap* heap = CcTest::heap();
 
   v8::HandleScope handle_scope(CcTest::isolate());
 
   Handle<Object> g1s1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g1s2 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
 
   Handle<Object> g2s1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g2s2 =
-    global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+    global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
 
   TestRetainedObjectInfo info1;
   TestRetainedObjectInfo info2;
@@ -278,24 +276,25 @@ TEST(IterateObjectGroups) {
 
 TEST(ImplicitReferences) {
   CcTest::InitializeVM();
-  GlobalHandles* global_handles = Isolate::Current()->global_handles();
+  GlobalHandles* global_handles = CcTest::i_isolate()->global_handles();
+  Heap* heap = CcTest::heap();
 
   v8::HandleScope handle_scope(CcTest::isolate());
 
   Handle<Object> g1s1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g1c1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g1c2 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
 
 
   Handle<Object> g2s1 =
-      global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+      global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g2s2 =
-    global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+    global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
   Handle<Object> g2c1 =
-    global_handles->Create(HEAP->AllocateFixedArray(1)->ToObjectChecked());
+    global_handles->Create(heap->AllocateFixedArray(1)->ToObjectChecked());
 
   global_handles->SetObjectGroupId(g1s1.location(), UniqueId(1));
   global_handles->SetObjectGroupId(g2s1.location(), UniqueId(2));
@@ -320,179 +319,30 @@ TEST(ImplicitReferences) {
 }
 
 
-static const int kBlockSize = 256;
-
-
-TEST(BlockCollection) {
-  v8::V8::Initialize();
-  Isolate* isolate = Isolate::Current();
-  GlobalHandles* global_handles = isolate->global_handles();
-  CHECK_EQ(0, global_handles->block_count());
-  CHECK_EQ(0, global_handles->global_handles_count());
-  Object* object = isolate->heap()->undefined_value();
-  const int kNumberOfBlocks = 5;
-  typedef Handle<Object> Block[kBlockSize];
-  for (int round = 0; round < 3; round++) {
-    Block blocks[kNumberOfBlocks];
-    for (int i = 0; i < kNumberOfBlocks; i++) {
-      for (int j = 0; j < kBlockSize; j++) {
-        blocks[i][j] = global_handles->Create(object);
-      }
-    }
-    CHECK_EQ(kNumberOfBlocks, global_handles->block_count());
-    for (int i = 0; i < kNumberOfBlocks; i++) {
-      for (int j = 0; j < kBlockSize; j++) {
-        global_handles->Destroy(blocks[i][j].location());
-      }
-    }
-    isolate->heap()->CollectAllAvailableGarbage("BlockCollection");
-    CHECK_EQ(0, global_handles->global_handles_count());
-    CHECK_EQ(1, global_handles->block_count());
-  }
-}
-
-
-class RandomMutationData {
- public:
-  explicit RandomMutationData(Isolate* isolate)
-      : isolate_(isolate), weak_offset_(0) {}
-
-  void Mutate(double strong_growth_tendency,
-              double weak_growth_tendency = 0.05) {
-    for (int i = 0; i < kBlockSize * 100; i++) {
-      if (rng_.next(strong_growth_tendency)) {
-        AddStrong();
-      } else if (strong_nodes_.size() != 0) {
-        size_t to_remove = rng_.next(static_cast<int>(strong_nodes_.size()));
-        RemoveStrong(to_remove);
-      }
-      if (rng_.next(weak_growth_tendency)) AddWeak();
-      if (rng_.next(0.05)) {
-#ifdef DEBUG
-        isolate_->global_handles()->VerifyBlockInvariants();
-#endif
-      }
-      if (rng_.next(0.0001)) {
-        isolate_->heap()->PerformScavenge();
-      } else if (rng_.next(0.00003)) {
-        isolate_->heap()->CollectAllAvailableGarbage();
-      }
-      CheckSizes();
-    }
-  }
-
-  void RemoveAll() {
-    while (strong_nodes_.size() != 0) {
-      RemoveStrong(strong_nodes_.size() - 1);
-    }
-    isolate_->heap()->PerformScavenge();
-    isolate_->heap()->CollectAllAvailableGarbage();
-    CheckSizes();
-  }
-
- private:
-  typedef std::vector<Object**> NodeVector;
-  typedef std::map<int32_t, Object**> NodeMap;
-
-  void CheckSizes() {
-    int stored_sizes =
-        static_cast<int>(strong_nodes_.size() + weak_nodes_.size());
-    CHECK_EQ(isolate_->global_handles()->global_handles_count(), stored_sizes);
-  }
-
-  void AddStrong() {
-    Object* object = isolate_->heap()->undefined_value();
-    Object** location = isolate_->global_handles()->Create(object).location();
-    strong_nodes_.push_back(location);
-  }
-
-  void RemoveStrong(size_t offset) {
-    isolate_->global_handles()->Destroy(strong_nodes_.at(offset));
-    strong_nodes_.erase(strong_nodes_.begin() + offset);
-  }
-
-  void AddWeak() {
-    v8::Isolate* isolate = reinterpret_cast<v8::Isolate*>(isolate_);
-    v8::HandleScope scope(isolate);
-    v8::Local<v8::Object> object = v8::Object::New();
-    int32_t offset = ++weak_offset_;
-    object->Set(7, v8::Integer::New(offset, isolate));
-    v8::Persistent<v8::Object> persistent(isolate, object);
-    persistent.MakeWeak(isolate, this, WeakCallback);
-    persistent.MarkIndependent();
-    Object** location = v8::Utils::OpenPersistent(persistent).location();
-    bool inserted =
-        weak_nodes_.insert(std::make_pair(offset, location)).second;
-    CHECK(inserted);
-  }
-
-  static void WeakCallback(v8::Isolate* isolate,
-                           v8::Persistent<v8::Object>* persistent,
-                           RandomMutationData* data) {
-    v8::Local<v8::Object> object =
-        v8::Local<v8::Object>::New(isolate, *persistent);
-    int32_t offset =
-        v8::Local<v8::Integer>::Cast(object->Get(7))->Int32Value();
-    Object** location = v8::Utils::OpenPersistent(persistent).location();
-    NodeMap& weak_nodes = data->weak_nodes_;
-    NodeMap::iterator it = weak_nodes.find(offset);
-    CHECK(it != weak_nodes.end());
-    CHECK(it->second == location);
-    weak_nodes.erase(it);
-    persistent->Dispose();
-  }
-
-  Isolate* isolate_;
-  RandomNumberGenerator rng_;
-  NodeVector strong_nodes_;
-  NodeMap weak_nodes_;
-  int32_t weak_offset_;
-};
-
-
-TEST(RandomMutation) {
-  v8::V8::Initialize();
-  Isolate* isolate = Isolate::Current();
-  CHECK_EQ(0, isolate->global_handles()->block_count());
-  HandleScope handle_scope(isolate);
-  v8::Context::Scope context_scope(
-      v8::Context::New(reinterpret_cast<v8::Isolate*>(isolate)));
-  RandomMutationData data(isolate);
-  // grow some
-  data.Mutate(0.65);
-  data.Mutate(0.55);
-  // balanced mutation
-  for (int i = 0; i < 3; i++) data.Mutate(0.50);
-  // shrink some
-  data.Mutate(0.45);
-  data.Mutate(0.35);
-  // clear everything
-  data.RemoveAll();
-}
-
-
 TEST(EternalHandles) {
   CcTest::InitializeVM();
-  Isolate* isolate = Isolate::Current();
+  Isolate* isolate = CcTest::i_isolate();
   v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
-  EternalHandles* eternals = isolate->eternal_handles();
+  EternalHandles* eternal_handles = isolate->eternal_handles();
 
   // Create a number of handles that will not be on a block boundary
   const int kArrayLength = 2048-1;
   int indices[kArrayLength];
+  v8::Eternal<v8::Value> eternals[kArrayLength];
 
-  CHECK_EQ(0, eternals->NumberOfHandles());
+  CHECK_EQ(0, eternal_handles->NumberOfHandles());
   for (int i = 0; i < kArrayLength; i++) {
+    indices[i] = -1;
     HandleScope scope(isolate);
     v8::Local<v8::Object> object = v8::Object::New();
     object->Set(i, v8::Integer::New(i, v8_isolate));
-    if (i % 2 == 0) {
-      // Create with internal api
-      indices[i] = eternals->Create(isolate, *v8::Utils::OpenHandle(*object));
-    } else {
-      // Create with external api
-      indices[i] = object.Eternalize(v8_isolate);
-    }
+    // Create with internal api
+    eternal_handles->Create(
+        isolate, *v8::Utils::OpenHandle(*object), &indices[i]);
+    // Create with external api
+    CHECK(eternals[i].IsEmpty());
+    eternals[i].Set(v8_isolate, object);
+    CHECK(!eternals[i].IsEmpty());
   }
 
   isolate->heap()->CollectAllAvailableGarbage();
@@ -500,22 +350,31 @@ TEST(EternalHandles) {
   for (int i = 0; i < kArrayLength; i++) {
     for (int j = 0; j < 2; j++) {
       HandleScope scope(isolate);
-      v8::Local<v8::Object> object;
+      v8::Local<v8::Value> local;
       if (j == 0) {
         // Test internal api
-        v8::Local<v8::Value> local =
-            v8::Utils::ToLocal(eternals->Get(indices[i]));
-        object = v8::Handle<v8::Object>::Cast(local);
+        local = v8::Utils::ToLocal(eternal_handles->Get(indices[i]));
       } else {
         // Test external api
-        object = v8::Local<v8::Object>::GetEternal(v8_isolate, indices[i]);
+        local = eternals[i].Get(v8_isolate);
       }
+      v8::Local<v8::Object> object = v8::Handle<v8::Object>::Cast(local);
       v8::Local<v8::Value> value = object->Get(i);
       CHECK(value->IsInt32());
       CHECK_EQ(i, value->Int32Value());
     }
   }
 
-  CHECK_EQ(kArrayLength, eternals->NumberOfHandles());
-}
+  CHECK_EQ(2*kArrayLength, eternal_handles->NumberOfHandles());
 
+  // Create an eternal via the constructor
+  {
+    HandleScope scope(isolate);
+    v8::Local<v8::Object> object = v8::Object::New();
+    v8::Eternal<v8::Object> eternal(v8_isolate, object);
+    CHECK(!eternal.IsEmpty());
+    CHECK(object == eternal.Get(v8_isolate));
+  }
+
+  CHECK_EQ(2*kArrayLength + 1, eternal_handles->NumberOfHandles());
+}

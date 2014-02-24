@@ -22,6 +22,8 @@
 #ifndef SRC_HANDLE_WRAP_H_
 #define SRC_HANDLE_WRAP_H_
 
+#include "async-wrap.h"
+#include "env.h"
 #include "node.h"
 #include "queue.h"
 #include "uv.h"
@@ -34,8 +36,8 @@ namespace node {
 // - Do not throw from handle methods. Set errno.
 //
 // - MakeCallback may only be made directly off the event loop.
-//   That is there can be no JavaScript stack frames underneith it.
-//   (Is there anyway to assert that?)
+//   That is there can be no JavaScript stack frames underneath it.
+//   (Is there any way to assert that?)
 //
 // - No use of v8::WeakReferenceCallback. The close callback signifies that
 //   we're done with a handle - external resources can be freed.
@@ -49,7 +51,7 @@ namespace node {
 //   js/c++ boundary crossing. At the javascript layer that should all be
 //   taken care of.
 
-class HandleWrap {
+class HandleWrap : public AsyncWrap {
  public:
   static void Close(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Ref(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -58,26 +60,20 @@ class HandleWrap {
   inline uv_handle_t* GetHandle() { return handle__; }
 
  protected:
-  explicit HandleWrap(v8::Handle<v8::Object> object, uv_handle_t* handle);
+  HandleWrap(Environment* env,
+             v8::Handle<v8::Object> object,
+             uv_handle_t* handle,
+             AsyncWrap::ProviderType provider);
   virtual ~HandleWrap();
-
-  inline v8::Local<v8::Object> object() {
-    return PersistentToLocal(node_isolate, persistent());
-  }
-
-  inline v8::Persistent<v8::Object>& persistent() {
-    return object_;
-  }
 
  private:
   friend void GetActiveHandles(const v8::FunctionCallbackInfo<v8::Value>&);
   static void OnClose(uv_handle_t* handle);
-  v8::Persistent<v8::Object> object_;
   QUEUE handle_wrap_queue_;
+  unsigned int flags_;
   // Using double underscore due to handle_ member in tcp_wrap. Probably
   // tcp_wrap should rename it's member to 'handle'.
   uv_handle_t* handle__;
-  unsigned int flags_;
 
   static const unsigned int kUnref = 1;
   static const unsigned int kCloseCallback = 2;

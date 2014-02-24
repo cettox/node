@@ -47,66 +47,70 @@ static QUEUE* uv__process_queue(uv_loop_t* loop, int pid) {
 }
 
 
-static uv_process_t* uv__process_find(uv_loop_t* loop, int pid) {
-  uv_process_t* handle;
+static void uv__chld(uv_signal_t* handle, int signum) {
+  uv_process_t* process;
+  uv_loop_t* loop;
+  int exit_status;
+  int term_signal;
+  unsigned int i;
+  int status;
+  pid_t pid;
+  QUEUE pending;
   QUEUE* h;
   QUEUE* q;
 
-  h = uv__process_queue(loop, pid);
-
-  QUEUE_FOREACH(q, h) {
-    handle = QUEUE_DATA(q, uv_process_t, queue);
-    if (handle->pid == pid) return handle;
-  }
-
-  return NULL;
-}
-
-
-static void uv__chld(uv_signal_t* handle, int signum) {
-  uv_process_t* process;
-  int exit_status;
-  int term_signal;
-  int status;
-  pid_t pid;
-
   assert(signum == SIGCHLD);
 
-  for (;;) {
-    pid = waitpid(-1, &status, WNOHANG);
+  QUEUE_INIT(&pending);
+  loop = handle->loop;
 
-    if (pid == 0)
-      return;
+  for (i = 0; i < ARRAY_SIZE(loop->process_handles); i++) {
+    h = loop->process_handles + i;
+    q = QUEUE_HEAD(h);
 
-    if (pid == -1) {
-      if (errno == ECHILD)
-        return; /* XXX stop signal watcher? */
-      else
-        abort();
+    while (q != h) {
+      process = QUEUE_DATA(q, uv_process_t, queue);
+      q = QUEUE_NEXT(q);
+
+      do
+        pid = waitpid(process->pid, &status, WNOHANG);
+      while (pid == -1 && errno == EINTR);
+
+      if (pid == 0)
+        continue;
+
+      if (pid == -1) {
+        if (errno != ECHILD)
+          abort();
+        continue;
+      }
+
+      process->status = status;
+      QUEUE_REMOVE(&process->queue);
+      QUEUE_INSERT_TAIL(&pending, &process->queue);
     }
 
-    process = uv__process_find(handle->loop, pid);
-    if (process == NULL)
-      continue; /* XXX bug? abort? */
+    while (!QUEUE_EMPTY(&pending)) {
+      q = QUEUE_HEAD(&pending);
+      QUEUE_REMOVE(q);
+      QUEUE_INIT(q);
 
-    uv__handle_stop(process);
+      process = QUEUE_DATA(q, uv_process_t, queue);
+      uv__handle_stop(process);
 
-    if (process->exit_cb == NULL)
-      continue;
+      if (process->exit_cb == NULL)
+        continue;
 
-    exit_status = 0;
-    term_signal = 0;
+      exit_status = 0;
+      if (WIFEXITED(process->status))
+        exit_status = WEXITSTATUS(process->status);
 
-    if (WIFEXITED(status))
-      exit_status = WEXITSTATUS(status);
+      term_signal = 0;
+      if (WIFSIGNALED(process->status))
+        term_signal = WTERMSIG(process->status);
 
-    if (WIFSIGNALED(status))
-      term_signal = WTERMSIG(status);
-
-    if (process->errorno)
-      exit_status = process->errorno; /* execve() failed */
-
-    process->exit_cb(process, exit_status, term_signal);
+      process->exit_cb(process, exit_status, term_signal);
+    }
   }
 }
 
@@ -182,7 +186,7 @@ skip:
 
 /*
  * Used for initializing stdio streams like options.stdin_stream. Returns
- * zero on success.
+ * zero on success. See also the cleanup section in uv_spawn().
  */
 static int uv__process_init_stdio(uv_stdio_container_t* container, int fds[2]) {
   int mask;
@@ -229,7 +233,7 @@ static int uv__process_open_stream(uv_stdio_container_t* container,
   if (!(container->flags & UV_CREATE_PIPE) || pipefds[0] < 0)
     return 0;
 
-  if (close(pipefds[1]))
+  if (uv__close(pipefds[1]))
     if (errno != EINTR && errno != EINPROGRESS)
       abort();
 
@@ -268,7 +272,7 @@ static void uv__write_int(int fd, int val) {
 }
 
 
-static void uv__process_child_init(uv_process_options_t options,
+static void uv__process_child_init(const uv_process_options_t* options,
                                    int stdio_count,
                                    int (*pipes)[2],
                                    int error_fd) {
@@ -276,64 +280,73 @@ static void uv__process_child_init(uv_process_options_t options,
   int use_fd;
   int fd;
 
-  if (options.flags & UV_PROCESS_DETACHED)
+  if (options->flags & UV_PROCESS_DETACHED)
     setsid();
 
   for (fd = 0; fd < stdio_count; fd++) {
     close_fd = pipes[fd][0];
     use_fd = pipes[fd][1];
 
-    if (use_fd >= 0)
-      close(close_fd);
-    else if (fd >= 3)
-      continue;
-    else {
-      /* redirect stdin, stdout and stderr to /dev/null even if UV_IGNORE is
-       * set
-       */
-      use_fd = open("/dev/null", fd == 0 ? O_RDONLY : O_RDWR);
+    if (use_fd < 0) {
+      if (fd >= 3)
+        continue;
+      else {
+        /* redirect stdin, stdout and stderr to /dev/null even if UV_IGNORE is
+         * set
+         */
+        use_fd = open("/dev/null", fd == 0 ? O_RDONLY : O_RDWR);
+        close_fd = use_fd;
 
-      if (use_fd == -1) {
+        if (use_fd == -1) {
         uv__write_int(error_fd, -errno);
-        perror("failed to open stdio");
-        _exit(127);
+          perror("failed to open stdio");
+          _exit(127);
+        }
       }
     }
 
     if (fd == use_fd)
       uv__cloexec(use_fd, 0);
-    else {
+    else
       dup2(use_fd, fd);
-      close(use_fd);
-    }
 
     if (fd <= 2)
       uv__nonblock(fd, 0);
+
+    if (close_fd != -1)
+      uv__close(close_fd);
   }
 
-  if (options.cwd && chdir(options.cwd)) {
+  for (fd = 0; fd < stdio_count; fd++) {
+    use_fd = pipes[fd][1];
+
+    if (use_fd >= 0 && fd != use_fd)
+      close(use_fd);
+  }
+
+  if (options->cwd != NULL && chdir(options->cwd)) {
     uv__write_int(error_fd, -errno);
     perror("chdir()");
     _exit(127);
   }
 
-  if ((options.flags & UV_PROCESS_SETGID) && setgid(options.gid)) {
+  if ((options->flags & UV_PROCESS_SETGID) && setgid(options->gid)) {
     uv__write_int(error_fd, -errno);
     perror("setgid()");
     _exit(127);
   }
 
-  if ((options.flags & UV_PROCESS_SETUID) && setuid(options.uid)) {
+  if ((options->flags & UV_PROCESS_SETUID) && setuid(options->uid)) {
     uv__write_int(error_fd, -errno);
     perror("setuid()");
     _exit(127);
   }
 
-  if (options.env) {
-    environ = options.env;
+  if (options->env != NULL) {
+    environ = options->env;
   }
 
-  execvp(options.file, options.args);
+  execvp(options->file, options->args);
   uv__write_int(error_fd, -errno);
   perror("execvp()");
   _exit(127);
@@ -342,7 +355,7 @@ static void uv__process_child_init(uv_process_options_t options,
 
 int uv_spawn(uv_loop_t* loop,
              uv_process_t* process,
-             const uv_process_options_t options) {
+             const uv_process_options_t* options) {
   int signal_pipe[2] = { -1, -1 };
   int (*pipes)[2];
   int stdio_count;
@@ -350,19 +363,20 @@ int uv_spawn(uv_loop_t* loop,
   ssize_t r;
   pid_t pid;
   int err;
+  int exec_errorno;
   int i;
 
-  assert(options.file != NULL);
-  assert(!(options.flags & ~(UV_PROCESS_DETACHED |
-                             UV_PROCESS_SETGID |
-                             UV_PROCESS_SETUID |
-                             UV_PROCESS_WINDOWS_HIDE |
-                             UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS)));
+  assert(options->file != NULL);
+  assert(!(options->flags & ~(UV_PROCESS_DETACHED |
+                              UV_PROCESS_SETGID |
+                              UV_PROCESS_SETUID |
+                              UV_PROCESS_WINDOWS_HIDE |
+                              UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS)));
 
   uv__handle_init(loop, (uv_handle_t*)process, UV_PROCESS);
   QUEUE_INIT(&process->queue);
 
-  stdio_count = options.stdio_count;
+  stdio_count = options->stdio_count;
   if (stdio_count < 3)
     stdio_count = 3;
 
@@ -376,8 +390,8 @@ int uv_spawn(uv_loop_t* loop,
     pipes[i][1] = -1;
   }
 
-  for (i = 0; i < options.stdio_count; i++) {
-    err = uv__process_init_stdio(options.stdio + i, pipes[i]);
+  for (i = 0; i < options->stdio_count; i++) {
+    err = uv__process_init_stdio(options->stdio + i, pipes[i]);
     if (err)
       goto error;
   }
@@ -412,8 +426,8 @@ int uv_spawn(uv_loop_t* loop,
 
   if (pid == -1) {
     err = -errno;
-    close(signal_pipe[0]);
-    close(signal_pipe[1]);
+    uv__close(signal_pipe[0]);
+    uv__close(signal_pipe[1]);
     goto error;
   }
 
@@ -422,51 +436,62 @@ int uv_spawn(uv_loop_t* loop,
     abort();
   }
 
-  close(signal_pipe[1]);
+  uv__close(signal_pipe[1]);
 
-  process->errorno = 0;
+  process->status = 0;
+  exec_errorno = 0;
   do
-    r = read(signal_pipe[0], &process->errorno, sizeof(process->errorno));
+    r = read(signal_pipe[0], &exec_errorno, sizeof(exec_errorno));
   while (r == -1 && errno == EINTR);
 
   if (r == 0)
     ; /* okay, EOF */
-  else if (r == sizeof(process->errorno))
+  else if (r == sizeof(exec_errorno))
     ; /* okay, read errorno */
   else if (r == -1 && errno == EPIPE)
     ; /* okay, got EPIPE */
   else
     abort();
 
-  close(signal_pipe[0]);
+  uv__close(signal_pipe[0]);
 
-  for (i = 0; i < options.stdio_count; i++) {
-    err = uv__process_open_stream(options.stdio + i, pipes[i], i == 0);
+  for (i = 0; i < options->stdio_count; i++) {
+    err = uv__process_open_stream(options->stdio + i, pipes[i], i == 0);
     if (err == 0)
       continue;
 
     while (i--)
-      uv__process_close_stream(options.stdio + i);
+      uv__process_close_stream(options->stdio + i);
 
     goto error;
   }
 
-  q = uv__process_queue(loop, pid);
-  QUEUE_INSERT_TAIL(q, &process->queue);
+  /* Only activate this handle if exec() happened successfully */
+  if (exec_errorno == 0) {
+    q = uv__process_queue(loop, pid);
+    QUEUE_INSERT_TAIL(q, &process->queue);
+    uv__handle_start(process);
+  }
 
   process->pid = pid;
-  process->exit_cb = options.exit_cb;
-  uv__handle_start(process);
+  process->exit_cb = options->exit_cb;
 
   free(pipes);
-  return 0;
+  return exec_errorno;
 
 error:
-  for (i = 0; i < stdio_count; i++) {
-    close(pipes[i][0]);
-    close(pipes[i][1]);
+  if (pipes != NULL) {
+    for (i = 0; i < stdio_count; i++) {
+      if (i < options->stdio_count)
+        if (options->stdio[i].flags & (UV_INHERIT_FD | UV_INHERIT_STREAM))
+          continue;
+      if (pipes[i][0] != -1)
+        close(pipes[i][0]);
+      if (pipes[i][1] != -1)
+        close(pipes[i][1]);
+    }
+    free(pipes);
   }
-  free(pipes);
 
   return err;
 }

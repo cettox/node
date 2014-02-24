@@ -128,9 +128,13 @@ class GlobalHandles {
   // Creates a new global handle that is alive until Destroy is called.
   Handle<Object> Create(Object* value);
 
+  // Copy a global handle
+  static Handle<Object> CopyGlobal(Object** location);
+
   // Destroy a global handle.
   static void Destroy(Object** location);
 
+  typedef WeakCallbackData<v8::Value, void>::Callback WeakCallback;
   typedef WeakReferenceCallbacks<v8::Value, void>::Revivable RevivableCallback;
 
   // Make the global handle weak and set the callback parameter for the
@@ -141,7 +145,14 @@ class GlobalHandles {
   // reason is that Smi::FromInt(0) does not change during garage collection.
   static void MakeWeak(Object** location,
                        void* parameter,
-                       RevivableCallback weak_reference_callback);
+                       WeakCallback weak_callback,
+                       RevivableCallback revivable_callback);
+
+  static inline void MakeWeak(Object** location,
+                              void* parameter,
+                              RevivableCallback revivable_callback) {
+    MakeWeak(location, parameter, NULL, revivable_callback);
+  }
 
   void RecordStats(HeapStats* stats);
 
@@ -156,9 +167,6 @@ class GlobalHandles {
   int global_handles_count() const {
     return number_of_global_handles_;
   }
-
-  // Returns the current number of allocated blocks
-  int block_count() const { return number_of_blocks_; }
 
   // Clear the weakness of a global handle.
   static void ClearWeakness(Object** location);
@@ -279,13 +287,10 @@ class GlobalHandles {
 #ifdef DEBUG
   void PrintStats();
   void Print();
-  void VerifyBlockInvariants();
 #endif
 
  private:
   explicit GlobalHandles(Isolate* isolate);
-
-  void SortBlocks(bool shouldPrune);
 
   // Migrates data from the internal representation (object_group_connections_,
   // retainer_infos_ and implicit_ref_connections_) to the public and more
@@ -300,64 +305,20 @@ class GlobalHandles {
   class Node;
   class NodeBlock;
   class NodeIterator;
-  class BlockListIterator;
-  // Base class for NodeBlock
-  class BlockList {
-   public:
-    BlockList();
-    ~BlockList() { ASSERT(IsDetached()); }
-    void Detach();
-    void InsertAsHead(BlockList* block) {
-      ASSERT(IsAnchor());
-      InsertAsNext(block);
-    }
-    void InsertAsTail(BlockList* block) {
-      ASSERT(IsAnchor());
-      prev_block_->InsertAsNext(block);
-    }
-    inline bool IsAnchor() { return first_free_ == NULL && used_nodes_ == 0; }
-    inline bool IsDetached() {
-      ASSERT_EQ(prev_block_ == this, next_block_ == this);
-      return prev_block_ == this;
-    }
-    bool HasAtLeastLength(int length);
-    bool IsUnused() { return used_nodes_ == 0; }
-    int used_nodes() const { return used_nodes_; }
-    BlockList* next() { return next_block_; }
-    BlockList* prev() { return prev_block_; }
-#ifdef DEBUG
-    int LengthOfFreeList();
-#endif
-    static void SortBlocks(GlobalHandles* global_handles, bool prune);
-
-   protected:
-    BlockList* prev_block_;
-    BlockList* next_block_;
-    Node* first_free_;
-    int used_nodes_;
-
-   private:
-    // Needed for quicksort
-    static int CompareBlocks(const void* a, const void* b);
-    void InsertAsNext(BlockList* block);
-    DISALLOW_COPY_AND_ASSIGN(BlockList);
-  };
 
   Isolate* isolate_;
 
-  // Field always containing the number of blocks allocated.
-  int number_of_blocks_;
   // Field always containing the number of handles to global objects.
   int number_of_global_handles_;
 
-  // Anchors for doubly linked lists of blocks
-  BlockList full_blocks_;
-  BlockList non_full_blocks_;
+  // List of all allocated node blocks.
+  NodeBlock* first_block_;
 
-  // An array of all the anchors held by GlobalHandles.
-  // This simplifies iteration across all blocks.
-  static const int kAllAnchorsSize = 2;
-  BlockList*  all_anchors_[kAllAnchorsSize];
+  // List of node blocks with used nodes.
+  NodeBlock* first_used_block_;
+
+  // Free list of nodes.
+  Node* first_free_;
 
   // Contains all nodes holding new space objects. Note: when the list
   // is accessed, some of the objects may have been promoted already.
@@ -396,8 +357,8 @@ class EternalHandles {
 
   int NumberOfHandles() { return size_; }
 
-  // Create an EternalHandle, returning the index.
-  int Create(Isolate* isolate, Object* object);
+  // Create an EternalHandle, overwriting the index.
+  void Create(Isolate* isolate, Object* object, int* index);
 
   // Grab the handle for an existing EternalHandle.
   inline Handle<Object> Get(int index) {
@@ -419,8 +380,7 @@ class EternalHandles {
   Handle<Object> CreateSingleton(Isolate* isolate,
                                  Object* object,
                                  SingletonHandle singleton) {
-    ASSERT(singleton_handles_[singleton] == kInvalidIndex);
-    singleton_handles_[singleton] = Create(isolate, object);
+    Create(isolate, object, &singleton_handles_[singleton]);
     return Get(singleton_handles_[singleton]);
   }
 

@@ -39,7 +39,6 @@
 #if defined(__sun)
 # include <sys/port.h>
 # include <port.h>
-# define futimes(fd, tv) futimesat(fd, (void*)0, tv)
 #endif /* __sun */
 
 #if defined(__APPLE__) && !TARGET_OS_IPHONE
@@ -66,6 +65,21 @@
     errno = _saved_errno;                                                     \
   }                                                                           \
   while (0)
+
+/* The __clang__ and __INTEL_COMPILER checks are superfluous because they
+ * define __GNUC__. They are here to convey to you, dear reader, that these
+ * macros are enabled when compiling with clang or icc.
+ */
+#if defined(__clang__) ||                                                     \
+    defined(__GNUC__) ||                                                      \
+    defined(__INTEL_COMPILER) ||                                              \
+    defined(__SUNPRO_C)
+# define UV_DESTRUCTOR(declaration) __attribute__((destructor)) declaration
+# define UV_UNUSED(declaration)     __attribute__((unused)) declaration
+#else
+# define UV_DESTRUCTOR(declaration) declaration
+# define UV_UNUSED(declaration)     declaration
+#endif
 
 #if defined(__linux__)
 # define UV__POLLIN   UV__EPOLLIN
@@ -114,11 +128,18 @@ enum {
   UV_TCP_SINGLE_ACCEPT    = 0x1000  /* Only accept() when idle. */
 };
 
+typedef enum {
+  UV_CLOCK_PRECISE = 0,  /* Use the highest resolution clock available. */
+  UV_CLOCK_FAST = 1      /* Use the fastest clock with <= 1ms granularity. */
+} uv_clocktype_t;
+
 /* core */
 int uv__nonblock(int fd, int set);
+int uv__close(int fd);
 int uv__cloexec(int fd, int set);
 int uv__socket(int domain, int type, int protocol);
 int uv__dup(int fd);
+ssize_t uv__recvmsg(int fd, struct msghdr *msg, int flags);
 void uv__make_close_pending(uv_handle_t* handle);
 
 void uv__io_init(uv__io_t* w, uv__io_cb cb, int fd);
@@ -136,8 +157,6 @@ int uv__async_start(uv_loop_t* loop, struct uv__async* wa, uv__async_cb cb);
 void uv__async_stop(uv_loop_t* loop, struct uv__async* wa);
 
 /* loop */
-int uv__loop_init(uv_loop_t* loop, int default_loop);
-void uv__loop_delete(uv_loop_t* loop);
 void uv__run_idle(uv_loop_t* loop);
 void uv__run_check(uv_loop_t* loop);
 void uv__run_prepare(uv_loop_t* loop);
@@ -178,10 +197,11 @@ void uv__work_submit(uv_loop_t* loop,
 void uv__work_done(uv_async_t* handle, int status);
 
 /* platform specific */
-uint64_t uv__hrtime(void);
+uint64_t uv__hrtime(uv_clocktype_t type);
 int uv__kqueue_init(uv_loop_t* loop);
 int uv__platform_loop_init(uv_loop_t* loop, int default_loop);
 void uv__platform_loop_delete(uv_loop_t* loop);
+void uv__platform_invalidate_fd(uv_loop_t* loop, int fd);
 
 /* various */
 void uv__async_close(uv_async_t* handle);
@@ -215,12 +235,10 @@ int uv__make_socketpair(int fds[2], int flags);
 int uv__make_pipe(int fds[2], int flags);
 
 #if defined(__APPLE__)
-typedef void (*cf_loop_signal_cb)(void*);
-
-void uv__cf_loop_signal(uv_loop_t* loop, cf_loop_signal_cb cb, void* arg);
 
 int uv__fsevents_init(uv_fs_event_t* handle);
 int uv__fsevents_close(uv_fs_event_t* handle);
+void uv__fsevents_loop_delete(uv_loop_t* loop);
 
 /* OSX < 10.7 has no file events, polyfill them */
 #ifndef MAC_OS_X_VERSION_10_7
@@ -242,21 +260,22 @@ static const int kFSEventStreamEventFlagItemIsSymlink = 0x00040000;
 
 #endif /* defined(__APPLE__) */
 
-__attribute__((unused))
-static void uv__req_init(uv_loop_t* loop, uv_req_t* req, uv_req_type type) {
+UV_UNUSED(static void uv__req_init(uv_loop_t* loop,
+                                   uv_req_t* req,
+                                   uv_req_type type)) {
   req->type = type;
   uv__req_register(loop, req);
 }
 #define uv__req_init(loop, req, type) \
   uv__req_init((loop), (uv_req_t*)(req), (type))
 
-__attribute__((unused))
-static void uv__update_time(uv_loop_t* loop) {
-  loop->time = uv__hrtime() / 1000000;
+UV_UNUSED(static void uv__update_time(uv_loop_t* loop)) {
+  /* Use a fast time source if available.  We only need millisecond precision.
+   */
+  loop->time = uv__hrtime(UV_CLOCK_FAST) / 1000000;
 }
 
-__attribute__((unused))
-static char* uv__basename_r(const char* path) {
+UV_UNUSED(static char* uv__basename_r(const char* path)) {
   char* s;
 
   s = strrchr(path, '/');

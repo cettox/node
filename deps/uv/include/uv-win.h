@@ -250,6 +250,10 @@ typedef struct {
   uv_sem_t turnstile2;
 } uv_barrier_t;
 
+typedef struct {
+  DWORD tls_index;
+} uv_key_t;
+
 #define UV_ONCE_INIT { 0, NULL }
 
 typedef struct uv_once_s {
@@ -529,7 +533,6 @@ RB_HEAD(uv_timer_tree_s, uv_timer_s);
     UV_REQ_FIELDS                                                             \
   } exit_req;                                                                 \
   BYTE* child_stdio_buffer;                                                   \
-  int spawn_error;                                                            \
   int exit_signal;                                                            \
   HANDLE wait_handle;                                                         \
   HANDLE process_handle;                                                      \

@@ -78,8 +78,13 @@ static void uv__async_event(uv_loop_t* loop,
 
   QUEUE_FOREACH(q, &loop->async_handles) {
     h = QUEUE_DATA(q, uv_async_t, queue);
-    if (!h->pending) continue;
+
+    if (h->pending == 0)
+      continue;
     h->pending = 0;
+
+    if (h->async_cb == NULL)
+      continue;
     h->async_cb(h, 0);
   }
 }
@@ -232,11 +237,11 @@ void uv__async_stop(uv_loop_t* loop, struct uv__async* wa) {
     return;
 
   uv__io_stop(loop, &wa->io_watcher, UV__POLLIN);
-  close(wa->io_watcher.fd);
+  uv__close(wa->io_watcher.fd);
   wa->io_watcher.fd = -1;
 
   if (wa->wfd != -1) {
-    close(wa->wfd);
+    uv__close(wa->wfd);
     wa->wfd = -1;
   }
 }

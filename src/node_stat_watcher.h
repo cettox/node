@@ -23,19 +23,21 @@
 #define SRC_NODE_STAT_WATCHER_H_
 
 #include "node.h"
+#include "async-wrap.h"
+#include "env.h"
 #include "uv.h"
+#include "v8.h"
 
 namespace node {
 
-class StatWatcher : ObjectWrap {
+class StatWatcher : public AsyncWrap {
  public:
-  static void Initialize(v8::Handle<v8::Object> target);
+  virtual ~StatWatcher();
+
+  static void Initialize(Environment* env, v8::Handle<v8::Object> target);
 
  protected:
-  static v8::Persistent<v8::FunctionTemplate> constructor_template;
-
-  StatWatcher();
-  virtual ~StatWatcher();
+  StatWatcher(Environment* env, v8::Local<v8::Object> wrap);
 
   static void New(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void Start(const v8::FunctionCallbackInfo<v8::Value>& args);

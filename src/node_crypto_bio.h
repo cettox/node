@@ -29,10 +29,6 @@ namespace node {
 
 class NodeBIO {
  public:
-  static inline BIO_METHOD* GetMethod() {
-    return &method_;
-  }
-
   NodeBIO() : length_(0), read_head_(&head_), write_head_(&head_) {
     // Loop head
     head_.next_ = &head_;
@@ -40,13 +36,10 @@ class NodeBIO {
 
   ~NodeBIO();
 
-  static int New(BIO* bio);
-  static int Free(BIO* bio);
-  static int Read(BIO* bio, char* out, int len);
-  static int Write(BIO* bio, const char* data, int len);
-  static int Puts(BIO* bio, const char* str);
-  static int Gets(BIO* bio, char* out, int size);
-  static long Ctrl(BIO* bio, int cmd, long num, void* ptr);
+  static BIO* New();
+
+  // Move read head to next buffer if needed
+  void TryMoveReadHead();
 
   // Allocate new buffer for write if needed
   void TryAllocateForWrite();
@@ -61,6 +54,10 @@ class NodeBIO {
   // Return pointer to internal data and amount of
   // contiguous data available to read
   char* Peek(size_t* size);
+
+  // Return pointers and sizes of multiple internal data chunks available for
+  // reading
+  size_t PeekMultiple(char** out, size_t* size, size_t* count);
 
   // Find first appearance of `delim` in buffer or `limit` if `delim`
   // wasn't found.
@@ -89,10 +86,19 @@ class NodeBIO {
     return static_cast<NodeBIO*>(bio->ptr);
   }
 
- protected:
+ private:
+  static int New(BIO* bio);
+  static int Free(BIO* bio);
+  static int Read(BIO* bio, char* out, int len);
+  static int Write(BIO* bio, const char* data, int len);
+  static int Puts(BIO* bio, const char* str);
+  static int Gets(BIO* bio, char* out, int size);
+  static long Ctrl(BIO* bio, int cmd, long num, void* ptr);
+
   // NOTE: Size is maximum TLS frame length, this is required if we want
   // to fit whole ClientHello into one Buffer of NodeBIO.
   static const size_t kBufferLength = 16 * 1024 + 5;
+  static const BIO_METHOD method;
 
   class Buffer {
    public:
@@ -109,8 +115,6 @@ class NodeBIO {
   Buffer head_;
   Buffer* read_head_;
   Buffer* write_head_;
-
-  static BIO_METHOD method_;
 };
 
 }  // namespace node

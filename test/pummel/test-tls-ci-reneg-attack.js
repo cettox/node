@@ -25,13 +25,13 @@ var spawn = require('child_process').spawn;
 var tls = require('tls');
 var fs = require('fs');
 
+if (!common.opensslCli) {
+  console.error('Skipping because node compiled without OpenSSL CLI.');
+  process.exit(0);
+}
+
 // renegotiation limits to test
 var LIMITS = [0, 1, 2, 3, 5, 10, 16];
-
-if (process.platform === 'win32') {
-  console.log('Skipping test, you probably don\'t have openssl installed.');
-  process.exit();
-}
 
 (function() {
   var n = 0;
@@ -63,7 +63,7 @@ function test(next) {
 
   server.listen(common.PORT, function() {
     var args = ('s_client -connect 127.0.0.1:' + common.PORT).split(' ');
-    var child = spawn('openssl', args);
+    var child = spawn(common.opensslCli, args);
 
     child.stdout.pipe(process.stdout);
     child.stderr.pipe(process.stderr);

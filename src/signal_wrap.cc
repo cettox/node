@@ -19,12 +19,18 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-#include "node.h"
+#include "async-wrap.h"
+#include "async-wrap-inl.h"
+#include "env.h"
+#include "env-inl.h"
 #include "handle_wrap.h"
-
+#include "util.h"
+#include "util-inl.h"
+#include "v8.h"
 
 namespace node {
 
+using v8::Context;
 using v8::Function;
 using v8::FunctionCallbackInfo;
 using v8::FunctionTemplate;
@@ -33,20 +39,17 @@ using v8::HandleScope;
 using v8::Integer;
 using v8::Local;
 using v8::Object;
-using v8::String;
 using v8::Value;
-
-static Cached<String> onsignal_sym;
-
 
 class SignalWrap : public HandleWrap {
  public:
-  static void Initialize(Handle<Object> target) {
-    HandleScope scope(node_isolate);
-
+  static void Initialize(Handle<Object> target,
+                         Handle<Value> unused,
+                         Handle<Context> context) {
+    Environment* env = Environment::GetCurrent(context);
     Local<FunctionTemplate> constructor = FunctionTemplate::New(New);
     constructor->InstanceTemplate()->SetInternalFieldCount(1);
-    constructor->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "Signal"));
+    constructor->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "Signal"));
 
     NODE_SET_PROTOTYPE_METHOD(constructor, "close", HandleWrap::Close);
     NODE_SET_PROTOTYPE_METHOD(constructor, "ref", HandleWrap::Ref);
@@ -54,9 +57,7 @@ class SignalWrap : public HandleWrap {
     NODE_SET_PROTOTYPE_METHOD(constructor, "start", Start);
     NODE_SET_PROTOTYPE_METHOD(constructor, "stop", Stop);
 
-    onsignal_sym = FIXED_ONE_BYTE_STRING(node_isolate, "onsignal");
-
-    target->Set(FIXED_ONE_BYTE_STRING(node_isolate, "Signal"),
+    target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "Signal"),
                 constructor->GetFunction());
   }
 
@@ -66,14 +67,17 @@ class SignalWrap : public HandleWrap {
     // Therefore we assert that we are not trying to call this as a
     // normal function.
     assert(args.IsConstructCall());
-
-    HandleScope scope(node_isolate);
-    new SignalWrap(args.This());
+    HandleScope handle_scope(args.GetIsolate());
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    new SignalWrap(env, args.This());
   }
 
-  explicit SignalWrap(Handle<Object> object)
-      : HandleWrap(object, reinterpret_cast<uv_handle_t*>(&handle_)) {
-    int r = uv_signal_init(uv_default_loop(), &handle_);
+  SignalWrap(Environment* env, Handle<Object> object)
+      : HandleWrap(env,
+                   object,
+                   reinterpret_cast<uv_handle_t*>(&handle_),
+                   AsyncWrap::PROVIDER_SIGNALWRAP) {
+    int r = uv_signal_init(env->event_loop(), &handle_);
     assert(r == 0);
   }
 
@@ -81,9 +85,9 @@ class SignalWrap : public HandleWrap {
   }
 
   static void Start(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
-    SignalWrap* wrap;
-    NODE_UNWRAP(args.This(), SignalWrap, wrap);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
+    SignalWrap* wrap = Unwrap<SignalWrap>(args.This());
 
     int signum = args[0]->Int32Value();
     int err = uv_signal_start(&wrap->handle_, OnSignal, signum);
@@ -91,22 +95,22 @@ class SignalWrap : public HandleWrap {
   }
 
   static void Stop(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
-    SignalWrap* wrap;
-    NODE_UNWRAP(args.This(), SignalWrap, wrap);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
+    SignalWrap* wrap = Unwrap<SignalWrap>(args.This());
 
     int err = uv_signal_stop(&wrap->handle_);
     args.GetReturnValue().Set(err);
   }
 
   static void OnSignal(uv_signal_t* handle, int signum) {
-    HandleScope scope(node_isolate);
+    SignalWrap* wrap = CONTAINER_OF(handle, SignalWrap, handle_);
+    Environment* env = wrap->env();
+    HandleScope handle_scope(env->isolate());
+    Context::Scope context_scope(env->context());
 
-    SignalWrap* wrap = container_of(handle, SignalWrap, handle_);
-    assert(wrap);
-
-    Local<Value> argv[1] = { Integer::New(signum, node_isolate) };
-    MakeCallback(wrap->object(), onsignal_sym, ARRAY_SIZE(argv), argv);
+    Local<Value> arg = Integer::New(signum, env->isolate());
+    wrap->MakeCallback(env->onsignal_string(), 1, &arg);
   }
 
   uv_signal_t handle_;
@@ -116,4 +120,4 @@ class SignalWrap : public HandleWrap {
 }  // namespace node
 
 
-NODE_MODULE(node_signal_wrap, node::SignalWrap::Initialize)
+NODE_MODULE_CONTEXT_AWARE_BUILTIN(signal_wrap, node::SignalWrap::Initialize)

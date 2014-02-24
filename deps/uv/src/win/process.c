@@ -127,7 +127,6 @@ static void uv_process_init(uv_loop_t* loop, uv_process_t* handle) {
   uv__handle_init(loop, (uv_handle_t*) handle, UV_PROCESS);
   handle->exit_cb = NULL;
   handle->pid = 0;
-  handle->spawn_error = 0;
   handle->exit_signal = 0;
   handle->wait_handle = INVALID_HANDLE_VALUE;
   handle->process_handle = INVALID_HANDLE_VALUE;
@@ -729,7 +728,7 @@ static void CALLBACK exit_wait_callback(void* data, BOOLEAN didTimeout) {
 
 /* Called on main thread after a child process has exited. */
 void uv_process_proc_exit(uv_loop_t* loop, uv_process_t* handle) {
-  int exit_code;
+  int64_t exit_code;
   DWORD status;
 
   assert(handle->exit_cb_pending);
@@ -752,15 +751,11 @@ void uv_process_proc_exit(uv_loop_t* loop, uv_process_t* handle) {
   /* callback.*/
   uv__handle_stop(handle);
 
-  if (handle->spawn_error) {
-    /* Spawning failed. */
-    exit_code = uv_translate_sys_error(handle->spawn_error);
-  } else if (!GetExitCodeProcess(handle->process_handle, &status)) {
+  if (GetExitCodeProcess(handle->process_handle, &status)) {
+    exit_code = status;
+  } else {
     /* Unable to to obtain the exit code. This should never happen. */
     exit_code = uv_translate_sys_error(GetLastError());
-  } else {
-    /* Make sure the exit code is >= 0. */
-    exit_code = status & INT_MAX;
   }
 
   /* Fire the exit callback. */
@@ -803,8 +798,9 @@ void uv_process_endgame(uv_loop_t* loop, uv_process_t* handle) {
 }
 
 
-int uv_spawn(uv_loop_t* loop, uv_process_t* process,
-    uv_process_options_t options) {
+int uv_spawn(uv_loop_t* loop,
+             uv_process_t* process,
+             const uv_process_options_t* options) {
   int i;
   int err = 0;
   WCHAR* path = NULL;
@@ -815,44 +811,45 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
   PROCESS_INFORMATION info;
   DWORD process_flags;
 
-  if (options.flags & (UV_PROCESS_SETGID | UV_PROCESS_SETUID)) {
+  if (options->flags & (UV_PROCESS_SETGID | UV_PROCESS_SETUID)) {
     return UV_ENOTSUP;
   }
 
-  if (options.file == NULL ||
-      options.args == NULL) {
+  if (options->file == NULL ||
+      options->args == NULL) {
     return UV_EINVAL;
   }
 
-  assert(options.file != NULL);
-  assert(!(options.flags & ~(UV_PROCESS_DETACHED |
-                             UV_PROCESS_SETGID |
-                             UV_PROCESS_SETUID |
-                             UV_PROCESS_WINDOWS_HIDE |
-                             UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS)));
+  assert(options->file != NULL);
+  assert(!(options->flags & ~(UV_PROCESS_DETACHED |
+                              UV_PROCESS_SETGID |
+                              UV_PROCESS_SETUID |
+                              UV_PROCESS_WINDOWS_HIDE |
+                              UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS)));
 
   uv_process_init(loop, process);
-  process->exit_cb = options.exit_cb;
+  process->exit_cb = options->exit_cb;
 
-  err = uv_utf8_to_utf16_alloc(options.file, &application);
+  err = uv_utf8_to_utf16_alloc(options->file, &application);
   if (err)
     goto done;
 
-  err = make_program_args(options.args,
-                          options.flags & UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS,
-                          &arguments);
+  err = make_program_args(
+      options->args,
+      options->flags & UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS,
+      &arguments);
   if (err)
     goto done;
 
-  if (options.env) {
-     err = make_program_env(options.env, &env);
-      if (err)
+  if (options->env) {
+     err = make_program_env(options->env, &env);
+     if (err)
        goto done;
   }
 
-  if (options.cwd) {
+  if (options->cwd) {
     /* Explicit cwd */
-    err = uv_utf8_to_utf16_alloc(options.cwd, &cwd);
+    err = uv_utf8_to_utf16_alloc(options->cwd, &cwd);
     if (err)
       goto done;
 
@@ -879,7 +876,7 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
     }
   }
 
-   /* Get PATH environment variable. */
+  /* Get PATH environment variable. */
   {
     DWORD path_len, r;
 
@@ -888,7 +885,6 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
       err = GetLastError();
       goto done;
     }
-
 
     path = (WCHAR*) malloc(path_len * sizeof(WCHAR));
     if (path == NULL) {
@@ -903,6 +899,10 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
     }
   }
 
+  err = uv__stdio_create(loop, options, &process->child_stdio_buffer);
+  if (err)
+    goto done;
+
   application_path = search_path(application,
                                  cwd,
                                  path);
@@ -911,10 +911,6 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
     err = ERROR_FILE_NOT_FOUND;
     goto done;
   }
-
-  err = uv__stdio_create(loop, &options, &process->child_stdio_buffer);
-  if (err)
-    goto done;
 
   startup.cb = sizeof(startup);
   startup.lpReserved = NULL;
@@ -929,7 +925,7 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
   startup.hStdOutput = uv__stdio_handle(process->child_stdio_buffer, 1);
   startup.hStdError = uv__stdio_handle(process->child_stdio_buffer, 2);
 
-  if (options.flags & UV_PROCESS_WINDOWS_HIDE) {
+  if (options->flags & UV_PROCESS_WINDOWS_HIDE) {
     /* Use SW_HIDE to avoid any potential process window. */
     startup.wShowWindow = SW_HIDE;
   } else {
@@ -938,7 +934,7 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
 
   process_flags = CREATE_UNICODE_ENVIRONMENT;
 
-  if (options.flags & UV_PROCESS_DETACHED) {
+  if (options->flags & UV_PROCESS_DETACHED) {
     /* Note that we're not setting the CREATE_BREAKAWAY_FROM_JOB flag. That
      * means that libuv might not let you create a fully deamonized process
      * when run under job control. However the type of job control that libuv
@@ -952,7 +948,7 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
     process_flags |= DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
   }
 
-  if (CreateProcessW(application_path,
+  if (!CreateProcessW(application_path,
                      arguments,
                      NULL,
                      NULL,
@@ -962,58 +958,67 @@ int uv_spawn(uv_loop_t* loop, uv_process_t* process,
                      cwd,
                      &startup,
                      &info)) {
-    /* Spawn succeeded */
-    process->process_handle = info.hProcess;
-    process->pid = info.dwProcessId;
-
-    /* If the process isn't spawned as detached, assign to the global job */
-    /* object so windows will kill it when the parent process dies. */
-    if (!(options.flags & UV_PROCESS_DETACHED)) {
-      uv_once(&uv_global_job_handle_init_guard_, uv__init_global_job_handle);
-
-      if (!AssignProcessToJobObject(uv_global_job_handle_, info.hProcess)) {
-        /* AssignProcessToJobObject might fail if this process is under job
-         * control and the job doesn't have the
-         * JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK flag set, on a Windows version
-         * that doesn't support nested jobs.
-         *
-         * When that happens we just swallow the error and continue without
-         * establishing a kill-child-on-parent-exit relationship, otherwise
-         * there would be no way for libuv applications run under job control
-         * to spawn processes at all.
-         */
-        DWORD err = GetLastError();
-        if (err != ERROR_ACCESS_DENIED)
-          uv_fatal_error(err, "AssignProcessToJobObject");
-      }
-    }
-
-    /* Set IPC pid to all IPC pipes. */
-    for (i = 0; i < options.stdio_count; i++) {
-      const uv_stdio_container_t* fdopt = &options.stdio[i];
-      if (fdopt->flags & UV_CREATE_PIPE &&
-          fdopt->data.stream->type == UV_NAMED_PIPE &&
-          ((uv_pipe_t*) fdopt->data.stream)->ipc) {
-        ((uv_pipe_t*) fdopt->data.stream)->ipc_pid = info.dwProcessId;
-      }
-    }
-
-    /* Setup notifications for when the child process exits. */
-    result = RegisterWaitForSingleObject(&process->wait_handle,
-        process->process_handle, exit_wait_callback, (void*)process, INFINITE,
-        WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE);
-    if (!result) {
-      uv_fatal_error(GetLastError(), "RegisterWaitForSingleObject");
-    }
-
-    CloseHandle(info.hThread);
-
-  } else {
     /* CreateProcessW failed. */
     err = GetLastError();
+    goto done;
   }
 
-done:
+  /* Spawn succeeded */
+  /* Beyond this point, failure is reported asynchronously. */
+  
+  process->process_handle = info.hProcess;
+  process->pid = info.dwProcessId;
+
+  /* If the process isn't spawned as detached, assign to the global job */
+  /* object so windows will kill it when the parent process dies. */
+  if (!(options->flags & UV_PROCESS_DETACHED)) {
+    uv_once(&uv_global_job_handle_init_guard_, uv__init_global_job_handle);
+
+    if (!AssignProcessToJobObject(uv_global_job_handle_, info.hProcess)) {
+      /* AssignProcessToJobObject might fail if this process is under job
+       * control and the job doesn't have the
+       * JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK flag set, on a Windows version
+       * that doesn't support nested jobs.
+       *
+       * When that happens we just swallow the error and continue without
+       * establishing a kill-child-on-parent-exit relationship, otherwise
+       * there would be no way for libuv applications run under job control
+       * to spawn processes at all.
+       */
+      DWORD err = GetLastError();
+      if (err != ERROR_ACCESS_DENIED)
+        uv_fatal_error(err, "AssignProcessToJobObject");
+    }
+  }
+
+  /* Set IPC pid to all IPC pipes. */
+  for (i = 0; i < options->stdio_count; i++) {
+    const uv_stdio_container_t* fdopt = &options->stdio[i];
+    if (fdopt->flags & UV_CREATE_PIPE &&
+        fdopt->data.stream->type == UV_NAMED_PIPE &&
+        ((uv_pipe_t*) fdopt->data.stream)->ipc) {
+      ((uv_pipe_t*) fdopt->data.stream)->ipc_pid = info.dwProcessId;
+    }
+  }
+
+  /* Setup notifications for when the child process exits. */
+  result = RegisterWaitForSingleObject(&process->wait_handle,
+      process->process_handle, exit_wait_callback, (void*)process, INFINITE,
+      WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE);
+  if (!result) {
+    uv_fatal_error(GetLastError(), "RegisterWaitForSingleObject");
+  }
+
+  CloseHandle(info.hThread);
+
+  assert(!err);  
+  
+  /* Make the handle active. It will remain active until the exit callback */
+  /* iis made or the handle is closed, whichever happens first. */
+  uv__handle_start(process);
+
+  /* Cleanup, whether we succeeded or failed. */
+ done:
   free(application);
   free(application_path);
   free(arguments);
@@ -1021,25 +1026,13 @@ done:
   free(env);
   free(path);
 
-  process->spawn_error = err;
-
   if (process->child_stdio_buffer != NULL) {
     /* Clean up child stdio handles. */
     uv__stdio_destroy(process->child_stdio_buffer);
     process->child_stdio_buffer = NULL;
   }
 
-  /* Make the handle active. It will remain active until the exit callback */
-  /* is made or the handle is closed, whichever happens first. */
-  uv__handle_start(process);
-
-  /* If an error happened, queue the exit req. */
-  if (err) {
-    process->exit_cb_pending = 1;
-    uv_insert_pending_req(loop, (uv_req_t*) &process->exit_req);
-  }
-
-  return 0;
+  return uv_translate_sys_error(err);
 }
 
 

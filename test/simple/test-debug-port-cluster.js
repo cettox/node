@@ -47,19 +47,15 @@ child.stderr.on('data', function(data) {
   }
 });
 
-setTimeout(function testTimedOut() {
-  assert(false, 'test timed out.');
-}, 3000);
-
-process.on('exit', function() {
-    child.kill();
+process.on('exit', function onExit() {
+  child.kill();
 });
 
-function assertOutputLines() {
+var assertOutputLines = common.mustCall(function() {
   var expectedLines = [
-    'debugger listening on port ' + port,
-    'debugger listening on port ' + (port+1),
-    'debugger listening on port ' + (port+2),
+    'Debugger listening on port ' + port,
+    'Debugger listening on port ' + (port+1),
+    'Debugger listening on port ' + (port+2),
   ];
 
   // Do not assume any particular order of output messages,
@@ -70,4 +66,4 @@ function assertOutputLines() {
   assert.equal(outputLines.length, expectedLines.length)
   for (var i = 0; i < expectedLines.length; i++)
     assert.equal(outputLines[i], expectedLines[i]);
-}
+});

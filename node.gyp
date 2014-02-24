@@ -1,9 +1,6 @@
 {
   'variables': {
     'v8_use_snapshot%': 'true',
-    # Turn off -Werror in V8
-    # See http://codereview.chromium.org/8159015
-    'werror': '',
     'node_use_dtrace%': 'false',
     'node_use_etw%': 'false',
     'node_use_perfctr%': 'false',
@@ -14,7 +11,6 @@
     'node_shared_cares%': 'false',
     'node_shared_libuv%': 'false',
     'node_use_openssl%': 'true',
-    'node_use_systemtap%': 'false',
     'node_shared_openssl%': 'false',
     'node_use_mdb%': 'false',
     'library_files': [
@@ -60,6 +56,7 @@
       'lib/string_decoder.js',
       'lib/sys.js',
       'lib/timers.js',
+      'lib/tracing.js',
       'lib/tls.js',
       'lib/_tls_legacy.js',
       'lib/_tls_wrap.js',
@@ -94,19 +91,20 @@
         'src/node.cc',
         'src/node_buffer.cc',
         'src/node_constants.cc',
-        'src/node_extensions.cc',
+        'src/node_contextify.cc',
         'src/node_file.cc',
         'src/node_http_parser.cc',
         'src/node_javascript.cc',
         'src/node_main.cc',
         'src/node_os.cc',
-        'src/node_script.cc',
+        'src/node_v8.cc',
         'src/node_stat_watcher.cc',
         'src/node_watchdog.cc',
         'src/node_zlib.cc',
         'src/pipe_wrap.cc',
         'src/signal_wrap.cc',
         'src/smalloc.cc',
+        'src/spawn_sync.cc',
         'src/string_bytes.cc',
         'src/stream_wrap.cc',
         'src/tcp_wrap.cc',
@@ -116,17 +114,22 @@
         'src/udp_wrap.cc',
         'src/uv.cc',
         # headers to make for a more pleasant IDE experience
+        'src/async-wrap.h',
+        'src/async-wrap-inl.h',
+        'src/base-object.h',
+        'src/base-object-inl.h',
+        'src/env.h',
+        'src/env-inl.h',
         'src/handle_wrap.h',
         'src/node.h',
         'src/node_buffer.h',
         'src/node_constants.h',
-        'src/node_extensions.h',
+        'src/node_contextify.h',
         'src/node_file.h',
         'src/node_http_parser.h',
+        'src/node_internals.h',
         'src/node_javascript.h',
-        'src/node_os.h',
         'src/node_root_certs.h',
-        'src/node_script.h',
         'src/node_version.h',
         'src/node_watchdog.h',
         'src/node_wrap.h',
@@ -140,6 +143,8 @@
         'src/string_bytes.h',
         'src/stream_wrap.h',
         'src/tree.h',
+        'src/util.h',
+        'src/util-inl.h',
         'deps/http_parser/http_parser.h',
         '<(SHARED_INTERMEDIATE_DIR)/node_natives.h',
         # javascript files to make for an even more pleasant IDE experience
@@ -170,7 +175,12 @@
           ],
           'conditions': [
             [ 'node_shared_openssl=="false"', {
-              'dependencies': [ './deps/openssl/openssl.gyp:openssl' ],
+              'dependencies': [
+                './deps/openssl/openssl.gyp:openssl',
+
+                # For tests
+                './deps/openssl/openssl.gyp:openssl-cli'
+              ],
             }]]
         }, {
           'defines': [ 'HAVE_OPENSSL=0' ]
@@ -180,12 +190,12 @@
           'dependencies': [ 'node_dtrace_header' ],
           'include_dirs': [ '<(SHARED_INTERMEDIATE_DIR)' ],
           #
-          # DTrace is supported on solaris, mac, and bsd.  There are three
-          # object files associated with DTrace support, but they're not all
-          # used all the time:
+          # DTrace is supported on linux, solaris, mac, and bsd.  There are
+          # three object files associated with DTrace support, but they're
+          # not all used all the time:
           #
           #   node_dtrace.o           all configurations
-          #   node_dtrace_ustack.o    not supported on OS X
+          #   node_dtrace_ustack.o    not supported on mac and linux
           #   node_dtrace_provider.o  All except OS X.  "dtrace -G" is not
           #                           used on OS X.
           #
@@ -196,11 +206,15 @@
           # below, and the GYP-generated Makefiles will properly build them when
           # needed.
           #
-          'sources': [
-            'src/node_dtrace.cc',
-          ],
-          'conditions': [ [
-            'OS!="mac"', {
+          'sources': [ 'src/node_dtrace.cc' ],
+          'conditions': [
+            [ 'OS=="linux"', {
+              'sources': [
+                '<(SHARED_INTERMEDIATE_DIR)/node_dtrace_provider.o',
+                '<(SHARED_INTERMEDIATE_DIR)/libuv_dtrace_provider.o',
+              ],
+            }],
+            [ 'OS!="mac" and OS!="linux"', {
               'sources': [
                 'src/node_dtrace_ustack.cc',
                 'src/node_dtrace_provider.cc',
@@ -213,12 +227,6 @@
           'include_dirs': [ '<(SHARED_INTERMEDIATE_DIR)' ],
           'sources': [
             'src/node_mdb.cc',
-          ],
-        } ],
-        [ 'node_use_systemtap=="true"', {
-          'defines': [ 'HAVE_SYSTEMTAP=1', 'STAP_SDT_V1=1' ],
-          'sources': [
-            'src/node_dtrace.cc',
           ],
         } ],
         [ 'node_use_etw=="true"', {
@@ -286,7 +294,6 @@
           'defines': [ '__POSIX__' ],
         }],
         [ 'OS=="mac"', {
-          'libraries': [ '-framework Carbon' ],
           'defines!': [
             'PLATFORM="mac"',
           ],
@@ -314,6 +321,12 @@
             # rather than gyp's preferred "solaris"
             'PLATFORM="sunos"',
           ],
+        }],
+        [
+          'OS=="linux" and node_shared_v8=="false"', {
+            'ldflags': [
+              '-Wl,--whole-archive <(V8_BASE) -Wl,--no-whole-archive',
+            ],
         }],
       ],
       'msvs_settings': {
@@ -382,11 +395,8 @@
             '<(SHARED_INTERMEDIATE_DIR)/node_natives.h',
           ],
           'conditions': [
-            [ 'node_use_dtrace=="false"'
-              ' and node_use_etw=="false"'
-              ' and node_use_systemtap=="false"',
-            {
-              'inputs': ['src/notrace_macros.py']
+            [ 'node_use_dtrace=="false" and node_use_etw=="false"', {
+              'inputs': [ 'src/notrace_macros.py' ]
             }],
             [ 'node_use_perfctr=="false"', {
               'inputs': [ 'src/perfctr_macros.py' ]
@@ -405,7 +415,7 @@
       'target_name': 'node_dtrace_header',
       'type': 'none',
       'conditions': [
-        [ 'node_use_dtrace=="true" or node_use_systemtap=="true"', {
+        [ 'node_use_dtrace=="true"', {
           'actions': [
             {
               'action_name': 'node_dtrace_header',
@@ -448,35 +458,59 @@
       'target_name': 'node_dtrace_provider',
       'type': 'none',
       'conditions': [
-        [ 'node_use_dtrace=="true" and OS!="mac"', {
+        [ 'node_use_dtrace=="true" and OS!="mac" and OS!="linux"', {
           'actions': [
             {
               'action_name': 'node_dtrace_provider_o',
               'inputs': [
-                '<(PRODUCT_DIR)/obj.target/libuv/deps/uv/src/unix/core.o',
-                '<(PRODUCT_DIR)/obj.target/node/src/node_dtrace.o',
+                '<(OBJ_DIR)/libuv/deps/uv/src/unix/core.o',
+                '<(OBJ_DIR)/node/src/node_dtrace.o',
               ],
               'outputs': [
-                '<(PRODUCT_DIR)/obj.target/node/src/node_dtrace_provider.o'
+                '<(OBJ_DIR)/node/src/node_dtrace_provider.o'
               ],
               'action': [ 'dtrace', '-G', '-xnolibs', '-s', 'src/node_provider.d',
                 '-s', 'deps/uv/src/unix/uv-dtrace.d', '<@(_inputs)',
                 '-o', '<@(_outputs)' ]
             }
           ]
-        } ]
+        }],
+        [ 'node_use_dtrace=="true" and OS=="linux"', {
+          'actions': [
+            {
+              'action_name': 'node_dtrace_provider_o',
+              'inputs': [ 'src/node_provider.d' ],
+              'outputs': [
+                '<(SHARED_INTERMEDIATE_DIR)/node_dtrace_provider.o'
+              ],
+              'action': [
+                'dtrace', '-C', '-G', '-s', '<@(_inputs)', '-o', '<@(_outputs)'
+              ],
+            },
+            {
+              'action_name': 'libuv_dtrace_provider_o',
+              'inputs': [ 'deps/uv/src/unix/uv-dtrace.d' ],
+              'outputs': [
+                '<(SHARED_INTERMEDIATE_DIR)/libuv_dtrace_provider.o'
+              ],
+              'action': [
+                'dtrace', '-C', '-G', '-s', '<@(_inputs)', '-o', '<@(_outputs)'
+              ],
+            },
+          ],
+        }],
       ]
     },
     {
       'target_name': 'node_dtrace_ustack',
       'type': 'none',
       'conditions': [
-        [ 'node_use_dtrace=="true" and OS!="mac"', {
+        [ 'node_use_dtrace=="true" and OS!="mac" and OS!="linux"', {
           'actions': [
             {
               'action_name': 'node_dtrace_ustack_constants',
               'inputs': [
-                '<(PRODUCT_DIR)/obj.target/deps/v8/tools/gyp/libv8_base.<(target_arch).a'
+                '<(V8_BASE)'
               ],
               'outputs': [
                 '<(SHARED_INTERMEDIATE_DIR)/v8constants.h'
@@ -494,7 +528,7 @@
                 '<(SHARED_INTERMEDIATE_DIR)/v8constants.h'
               ],
               'outputs': [
-                '<(PRODUCT_DIR)/obj.target/node/src/node_dtrace_ustack.o'
+                '<(OBJ_DIR)/node/src/node_dtrace_ustack.o'
               ],
               'conditions': [
                 [ 'target_arch=="ia32"', {
